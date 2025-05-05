@@ -3,6 +3,8 @@ from fastapi import FastAPI
 from confluent_kafka import Consumer
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from datetime import datetime, timezone
+import time
 import smtplib
 import json
 import threading
@@ -52,6 +54,27 @@ def send_email(to_email, subject, message):
     except Exception as e:
         print(f"Failed to send email: {str(e)}")
 
+def generate_iso8601_ns():
+    # Get current time in total nanoseconds since epoch
+    total_ns = time.time_ns()
+
+    # Split into whole seconds and the sub‑second nanosecond part
+    seconds = total_ns // 1_000_000_000
+    nanos   = total_ns % 1_000_000_000
+
+    # Build a UTC datetime from the whole seconds
+    dt = datetime.fromtimestamp(seconds, tz=timezone.utc)
+
+    # Format date + time (up to seconds)
+    base = dt.strftime('%Y-%m-%dT%H:%M:%S')
+
+    # Format nanoseconds as 9 digits, then pad to 12 if desired:
+    # here we append three zeros to get 12 fractional digits
+    frac = f"{nanos:09d}000"
+
+    # Combine and add Z suffix
+    return f"{base}.{frac}Z"
+
 def consume_messages():
     consumer.subscribe([topic])
     print(f"Consumer started. Listening to topic: {topic}")
@@ -68,7 +91,8 @@ def consume_messages():
             try:
                 data = json.loads(msg.value().decode('utf-8'))
                 to_email = data.get('email')
-                subject = data.get('subject')
+                # subject = data.get('subject')
+                subject = generate_iso8601_ns()
                 message = data.get('message')
 
                 if all([to_email, subject, message]):

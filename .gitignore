@@ -3,3 +3,6 @@
 __pychache__/
 notification-venv/
 *.env/
+/test-scripts/package-lock.json
+/test-scripts/package.json
+/test-scripts/node_modules/
