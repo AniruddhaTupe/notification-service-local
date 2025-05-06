@@ -4,7 +4,7 @@ import exec from 'k6/execution';
 
 export let options = {
     stages: [
-        { duration: '1s', target: 120 },
+        { duration: '2s', target: 1 },
         // { duration: '1m', target: 100 },
         // { duration: '30s', target: 0 },
     ],

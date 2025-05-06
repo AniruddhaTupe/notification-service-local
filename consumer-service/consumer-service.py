@@ -1,25 +1,75 @@
+import logging
+logging.getLogger().setLevel(logging.DEBUG)
+
 # uvicorn consumer-service:app --port 8003 --reload
 from fastapi import FastAPI
 from confluent_kafka import Consumer
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone
+from prometheus_client import Counter, Histogram, make_asgi_app, REGISTRY
 import time
 import smtplib
 import json
 import threading
 import time
-import logging
 import os
+
+# --- OpenTelemetry Tracing Setup ---
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+from opentelemetry.trace import SpanKind
+from opentelemetry.propagate import extract
+
+resource = Resource(attributes={"service.name": "consumer-service"})
+trace.set_tracer_provider(TracerProvider(resource=resource))
+jaeger_exporter = JaegerExporter(
+    agent_host_name="jaeger",
+    agent_port=6831,
+)
+span_processor = BatchSpanProcessor(jaeger_exporter)
+trace.get_tracer_provider().add_span_processor(span_processor)
+tracer = trace.get_tracer(__name__)
+# --- End OpenTelemetry Setup ---
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+FastAPIInstrumentor().instrument_app(app)
+RequestsInstrumentor().instrument()
+
+# Add Prometheus metrics
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
+
+# Define metrics
+consumed_messages_total = Counter('consumed_messages_total', 'Total number of messages consumed', ['category'])
+email_send_time = Histogram('email_send_seconds', 'Time spent sending emails', ['category'])
+email_errors_total = Counter('email_errors_total', 'Total number of email sending errors', ['category'])
+kafka_errors_total = Counter('kafka_errors_total', 'Total number of Kafka consumer errors', ['category'])
+end_to_end_latency = Histogram(
+    'email_end_to_end_latency_seconds',
+    'End-to-end latency from request to email sent',
+    ['category'],
+    buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, float('inf'))  # Define buckets in seconds
+)
+
+# Initialize metrics with default values
+for category in ['marketing', 'security', 'product_updates']:
+    consumed_messages_total.labels(category=category)._value.set(0)  # Initialize counter
+    email_send_time.labels(category=category)  # Initialize histogram
+    email_errors_total.labels(category=category)._value.set(0)  # Initialize counter
+    end_to_end_latency.labels(category=category)  # Initialize histogram
 
 # Get SMTP configuration from environment variables
 SMTP_HOST = os.getenv('SMTP_HOST', 'mailhog')
@@ -39,20 +89,50 @@ conf = {
 consumer = Consumer(conf)
 topic = os.getenv('KAFKA_TOPIC', 'email-notifs')
 
-def send_email(to_email, subject, message):
-    msg = MIMEMultipart()
-    msg['From'] = 'notification@example.com'
-    msg['To'] = to_email
-    msg['Subject'] = subject
+@app.get("/health")
+def health_check():
+    return {"status": "healthy"}
 
-    msg.attach(MIMEText(message, 'plain'))
+def send_email(to_email, subject, message, category, request_timestamp=None):
+    with tracer.start_as_current_span("send_email", kind=SpanKind.CLIENT) as span:
+        span.set_attribute("email.recipient", to_email)
+        span.set_attribute("email.category", category)
+        
+        start_time = time.time()
+        current_time = time.time()
+        
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = 'notification@example.com'
+            msg['To'] = to_email
+            msg['Subject'] = subject
 
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-            smtp.send_message(msg)
-        print(f"Email sent successfully to {to_email}")
-    except Exception as e:
-        print(f"Failed to send email: {str(e)}")
+            msg.attach(MIMEText(message, 'plain'))
+
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
+                smtp.send_message(msg)
+                span.add_event("email.sent")
+                
+                # Record email send time
+                email_send_time.labels(category=category).observe(time.time() - start_time)
+                
+                # Calculate and record end-to-end latency if request_timestamp is available
+                if request_timestamp:
+                    end_to_end_latency_value = time.time() - float(request_timestamp)
+                    end_to_end_latency.labels(category=category).observe(end_to_end_latency_value)
+                    logger.debug(f"DEBUG: Recorded end-to-end latency in consumer for category {category}: {end_to_end_latency_value} seconds")
+                    logger.debug(f"DEBUG: Current metric value: {REGISTRY.get_sample_value('email_end_to_end_latency_seconds_count', {'category': category})}")
+                else:
+                    logger.warning(f"No request_timestamp available for message to {to_email}")
+
+                return True
+
+        except Exception as e:
+            span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+            span.record_exception(e)
+            email_errors_total.labels(category=category).inc()
+            logger.error(f"Failed to send email: {str(e)}")
+            return False
 
 def generate_iso8601_ns():
     # Get current time in total nanoseconds since epoch
@@ -77,7 +157,7 @@ def generate_iso8601_ns():
 
 def consume_messages():
     consumer.subscribe([topic])
-    print(f"Consumer started. Listening to topic: {topic}")
+    logger.info(f"Consumer started. Listening to topic: {topic}")
 
     try:
         while True:
@@ -85,27 +165,60 @@ def consume_messages():
             if msg is None:
                 continue
             if msg.error():
-                print(f"Consumer error: {msg.error()}")
+                with tracer.start_as_current_span("kafka_error", kind=SpanKind.CONSUMER) as span:
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(msg.error())))
+                    kafka_errors_total.inc()
+                    logger.error(f"Consumer error: {msg.error()}")
                 continue
 
             try:
-                data = json.loads(msg.value().decode('utf-8'))
-                to_email = data.get('email')
-                # subject = data.get('subject')
-                subject = generate_iso8601_ns()
-                message = data.get('message')
+                # Extract trace context from message headers
+                headers = {k: v.decode('utf-8') for k, v in msg.headers() or []}
+                context = extract(headers)
 
-                if all([to_email, subject, message]):
-                    send_email(to_email, subject, message)
-                else:
-                    print("Missing required email fields")
-            except json.JSONDecodeError:
-                print("Failed to decode message")
+                with tracer.start_as_current_span(
+                    "process_message",
+                    context=context,
+                    kind=SpanKind.CONSUMER
+                ) as span:
+                    # Add message metadata as span attributes
+                    span.set_attribute("messaging.system", "kafka")
+                    span.set_attribute("messaging.destination", topic)
+                    span.set_attribute("messaging.destination_kind", "topic")
+                    
+                    data = json.loads(msg.value().decode('utf-8'))
+                    to_email = data.get('email')
+                    subject = generate_iso8601_ns()
+                    message = data.get('message')
+                    category = data.get('category', 'unknown')
+                    request_timestamp = data.get('request_timestamp')
+                    request_id = data.get('request_id')
+
+                    logger.debug(f"DEBUG: Received message - Category: {category}, Request ID: {request_id}, Timestamp: {request_timestamp}")
+
+                    span.set_attribute("messaging.category", category)
+                    span.set_attribute("messaging.recipient", to_email)
+                    span.set_attribute("messaging.request_id", request_id)
+
+                    if all([to_email, subject, message]):
+                        consumed_messages_total.labels(category=category).inc()
+                        send_email(to_email, subject, message, category, request_timestamp)
+                        
+                    else:
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, "Missing required email fields"))
+                        logger.warning("Missing required email fields")
+
+            except json.JSONDecodeError as e:
+                with tracer.start_as_current_span("json_decode_error", kind=SpanKind.CONSUMER) as span:
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                    logger.error("Failed to decode message")
             except Exception as e:
-                print(f"Error processing message: {str(e)}")
-
+                with tracer.start_as_current_span("message_processing_error", kind=SpanKind.CONSUMER) as span:
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                    span.record_exception(e)
+                    logger.error(f"Error processing message: {str(e)}")
     except KeyboardInterrupt:
-        print("Consumer stopped")
+        logger.info("Consumer stopped")
     finally:
         consumer.close()
 
