@@ -103,7 +103,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(email_requests_total[5m])",
+          "expr": "sum(email_requests_total) by (category)",
           "legendFormat": "{{category}}",
           "refId": "A"
         }

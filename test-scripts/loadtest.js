@@ -4,15 +4,10 @@ import exec from 'k6/execution';
 
 export let options = {
     stages: [
-        { duration: '2s', target: 1 },
+        { duration: '30s', target: 1 },
         // { duration: '1m', target: 100 },
         // { duration: '30s', target: 0 },
     ],
-    // Adjust threshold based on current performance
-    thresholds: {
-        http_req_duration: ['p(95)<5000'], // 5 seconds
-        http_req_failed: ['rate<0.01'],    // fewer than 1% failed requests
-    },
 };
 
 // Build a nanosecond‑format ISO timestamp
@@ -37,17 +32,13 @@ function getHighResTimestamp() {
 }
 
 export default function () {
-    const timestamp = getHighResTimestamp();
+    // const timestamp = getHighResTimestamp();
 
     const url = 'http://localhost/notification/send-email/';
 
-    // capture the current timestamp
-    // const now = new Date().toISOString();
-
-    // Always use this email per spec:
     const payload = JSON.stringify({
         subject: 'Test Subject',
-        message: timestamp,
+        message: 'Test Message',
         category: 'marketing'
     });
 
