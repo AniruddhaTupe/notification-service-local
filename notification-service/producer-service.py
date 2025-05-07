@@ -1,6 +1,3 @@
-import logging
-logging.getLogger().setLevel(logging.DEBUG)
-
 # uvicorn producer-service:app --port 8002 --reload
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -38,7 +35,7 @@ tracer = trace.get_tracer(__name__)
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -174,7 +171,10 @@ def send_email(request: EmailRequest):
                             "request_timestamp": current_time,
                             "request_id": str(hash(f"{current_time}{subscriber['user_id']}{request.subject}"))
                         }
-                        logger.debug(f"DEBUG: Sending message with timestamp: {current_time} for category: {request.category}")
+                        json_str = json.dumps(data)
+                        msg_bytes = json_str.encode('utf-8')
+                        logger.info(f"Message size: {len(msg_bytes)}")
+                        logger.info(f"Sending message with timestamp: {current_time} for category: {request.category}")
                         producer.produce(
                             TOPIC,
                             json.dumps(data).encode('utf-8'),

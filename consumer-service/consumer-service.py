@@ -1,5 +1,4 @@
 import logging
-logging.getLogger().setLevel(logging.DEBUG)
 
 # uvicorn consumer-service:app --port 8003 --reload
 from fastapi import FastAPI
@@ -39,7 +38,7 @@ tracer = trace.get_tracer(__name__)
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -99,7 +98,6 @@ def send_email(to_email, subject, message, category, request_timestamp=None):
         span.set_attribute("email.category", category)
         
         start_time = time.time()
-        current_time = time.time()
         
         try:
             msg = MIMEMultipart()
@@ -120,8 +118,8 @@ def send_email(to_email, subject, message, category, request_timestamp=None):
                 if request_timestamp:
                     end_to_end_latency_value = time.time() - float(request_timestamp)
                     end_to_end_latency.labels(category=category).observe(end_to_end_latency_value)
-                    logger.debug(f"DEBUG: Recorded end-to-end latency in consumer for category {category}: {end_to_end_latency_value} seconds")
-                    logger.debug(f"DEBUG: Current metric value: {REGISTRY.get_sample_value('email_end_to_end_latency_seconds_count', {'category': category})}")
+                    logger.info(f"Recorded end-to-end latency in consumer for category {category}: {end_to_end_latency_value} seconds")
+                    logger.info(f"Current metric value: {REGISTRY.get_sample_value('email_end_to_end_latency_seconds_count', {'category': category})}")
                 else:
                     logger.warning(f"No request_timestamp available for message to {to_email}")
 
@@ -173,7 +171,10 @@ def consume_messages():
 
             try:
                 # Extract trace context from message headers
+                logger.info(f"Total Msg size: {len(msg)}")
+                logger.info(f"Msg value size: {len(msg.value())}")
                 headers = {k: v.decode('utf-8') for k, v in msg.headers() or []}
+                logger.info(f"Headers size: {len(headers)}")
                 context = extract(headers)
 
                 with tracer.start_as_current_span(
@@ -188,13 +189,13 @@ def consume_messages():
                     
                     data = json.loads(msg.value().decode('utf-8'))
                     to_email = data.get('email')
-                    subject = generate_iso8601_ns()
+                    subject = data.get('subject')
                     message = data.get('message')
                     category = data.get('category', 'unknown')
                     request_timestamp = data.get('request_timestamp')
                     request_id = data.get('request_id')
 
-                    logger.debug(f"DEBUG: Received message - Category: {category}, Request ID: {request_id}, Timestamp: {request_timestamp}")
+                    logger.info(f"Received message - Category: {category}, Request ID: {request_id}, Timestamp: {request_timestamp}")
 
                     span.set_attribute("messaging.category", category)
                     span.set_attribute("messaging.recipient", to_email)

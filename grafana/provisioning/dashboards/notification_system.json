@@ -154,7 +154,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               }
             ]
@@ -190,7 +190,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(email_send_seconds_sum[5m]) / rate(email_send_seconds_count[5m])",
+          "expr": "rate(email_processing_seconds_sum[5m]) / rate(email_processing_seconds_count[5m])",
           "legendFormat": "{{category}}",
           "refId": "A"
         }
@@ -356,7 +356,7 @@
           "sort": "none"
         }
       },
-      "title": "Consumed Messages by Category",
+      "title": "Rate of Consumed Messages by Category",
       "type": "timeseries",
       "targets": [
         {
