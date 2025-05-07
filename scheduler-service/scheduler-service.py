@@ -79,9 +79,6 @@ def call_subscribers_api(job_id, category, subject, body):
             "date_time": None  # explicitly set to null
         }
 
-        # Note: email field is required by EmailRequest model,
-        # but in this context it's filled dynamically inside /send-email
-        # when iterating over subscribers. So we omit it here.
         response = requests.post(
             f"{NOTIFICATION_SERVICE_URL}/send-email/",
             json=payload

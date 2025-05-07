@@ -106,7 +106,7 @@ services:
     networks:
       - app-net
     environment:
-      - USER_PREFERENCE_SERVICE_URL=http://traefik/user-preference
+      - USER_PREFERENCE_SERVICE_URL=http://traefik/user-preference  # Pass it through traefik for load balancing
       - SCHEDULER_SERVICE_URL=http://traefik/scheduler
       # - USER_PREFERENCE_SERVICE_URL=http://user-preference:8000
       # - SCHEDULER_SERVICE_URL=http://scheduler:8001
